@@ -1,0 +1,49 @@
+name: build-and-bump
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+env:
+  IMAGE_REPO: gongcaedan.kr.ncr.ntruss.com/gongcaedan/user
+  MANIFEST_SERVICE_PATH: user
+  MANIFEST_REPO_HOSTPATH: github.com/gongcaedan/gongcaedan-manifest.git
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: user-${{ github.ref }}
+      cancel-in-progress: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set IMAGE_TAG (short SHA)
+        run: echo "IMAGE_TAG=${GITHUB_SHA::7}" >> $GITHUB_ENV
+
+      - name: Docker login to NCR
+        run: |
+          echo "${{ secrets.NCR_PASSWORD }}" | docker login "${{ secrets.NCR_SERVER }}" \
+            -u "${{ secrets.NCR_USERNAME }}" --password-stdin
+
+      - name: Build & Push Image
+        run: |
+          docker build -t ${IMAGE_REPO}:${IMAGE_TAG} .
+          docker push ${IMAGE_REPO}:${IMAGE_TAG}
+
+      - name: Clone manifest repo (HTTPS + PAT)
+        run: |
+          git clone "https://x-access-token:${{ secrets.MANIFEST_PAT }}@${{ env.MANIFEST_REPO_HOSTPATH }}" manifest
+          cd manifest
+          git config user.name  "${{ secrets.GIT_USER_NAME || 'github-actions' }}"
+          git config user.email "${{ secrets.GIT_USER_EMAIL || 'actions@github.com' }}"
+
+          # values.yaml의 image.tag 갱신
+          sed -i "s#^\(\s*tag:\s*\).*#\1\"${IMAGE_TAG}\"#g" ${MANIFEST_SERVICE_PATH}/values.yaml
+
+          git add ${MANIFEST_SERVICE_PATH}/values.yaml
+          git commit -m "ci(${MANIFEST_SERVICE_PATH}): bump image tag to ${IMAGE_TAG}" || exit 0
+          git push origin HEAD:main
